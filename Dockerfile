@@ -1,37 +1,25 @@
-FROM aeris22/cryptcheck AS builder
-MAINTAINER Alexandre Flament <alex@al-f.net>
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
-RUN apk add --update bash make gcc g++ libxml2-dev yaml-dev zlib-dev
+WORKDIR /src
 
-ENV PATH /usr/local/rbenv/shims:/usr/local/rbenv/bin:$PATH
-ENV RBENV_ROOT /usr/local/rbenv
-ENV RUBY_CONFIGURE_OPTS --disable-install-doc
+COPY go.mod ./
+COPY *.go ./
 
-WORKDIR /cryptcheck-backend/
-COPY .ruby-version Gemfile /cryptcheck-backend/
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/cryptcheck-backend .
 
-RUN bundle config --local local.cryptcheck /cryptcheck && \
-    bundle config set without 'test development'
-RUN bundle install
-RUN bundle config set deployment 'true' && \
-    bundle install
+FROM alpine:3.20
 
-COPY . /cryptcheck-backend/
+RUN apk add --no-cache ca-certificates
 
-FROM aeris22/cryptcheck AS server
-MAINTAINER Alexandre Flament <alex@al-f.net>
-
-RUN apk add --no-cache --update libstdc++
-
-ENV RAILS_ENV=production
-ENV SINATRA_ACTIVESUPPORT_WARNING false
-
-WORKDIR /cryptcheck-backend/
-COPY --from=builder /cryptcheck-backend/ /cryptcheck-backend/
+WORKDIR /app
+COPY --from=builder /out/cryptcheck-backend /usr/local/bin/cryptcheck-backend
 
 EXPOSE 7000
 
-ENTRYPOINT ["/sbin/tini", "--", "/cryptcheck-backend/cryptcheck-backend"]
+ENTRYPOINT ["/usr/local/bin/cryptcheck-backend"]
 
 LABEL org.label-schema.usage="https://github.com/dalf/cryptcheck-backend" \
       org.opencontainers.image.title="cryptcheck-backend" \

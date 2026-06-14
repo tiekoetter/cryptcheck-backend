@@ -1,5 +1,3 @@
-Dockerfile
-.git/*
-.bundle/*
-
+.git
 .vscode
+cryptcheck-backend
