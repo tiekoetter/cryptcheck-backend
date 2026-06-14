@@ -53,7 +53,15 @@ func main() {
 
 	addr := net.JoinHostPort(*bindHost, strconv.Itoa(*bindPort))
 	log.Printf("listening on %s", addr)
-	if err := http.ListenAndServe(addr, srv.routes()); err != nil {
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           srv.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

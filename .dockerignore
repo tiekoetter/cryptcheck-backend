@@ -1,3 +1,10 @@
 .git
+.github
 .vscode
 cryptcheck-backend
+*.test
+*-good.json
+*-test.json
+README.md
+LICENSE
+Makefile

@@ -18,7 +18,10 @@ func (c httpClient) headHSTS(ctx context.Context, url string) (int, bool) {
 	client := &http.Client{
 		Timeout: c.timeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // intentional
+				MinVersion:         tls.VersionTLS12,
+			},
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse

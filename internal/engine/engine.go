@@ -455,7 +455,7 @@ func (s *Server) handshake(ctx context.Context, cfg Config, opts handshakeOption
 	defer rawConn.Close()
 
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // intentional
 		MinVersion:         opts.minVersion,
 		MaxVersion:         opts.maxVersion,
 		CipherSuites:       opts.suites,
