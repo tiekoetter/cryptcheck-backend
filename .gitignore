@@ -1,2 +1,4 @@
 .vscode
 cryptcheck-backend
+*-good.json
+*-test.json

@@ -1,20 +1,18 @@
 package main
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/dalf/cryptcheck-backend/internal/host"
 )
 
 func TestRoot(t *testing.T) {
-	srv := &server{timeout: time.Second, now: time.Now}
+	srv := &server{now: time.Now}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	res := httptest.NewRecorder()
 
@@ -29,22 +27,22 @@ func TestRoot(t *testing.T) {
 }
 
 func TestParseTargetDefaultPort(t *testing.T) {
-	host, port, problem := parseTarget("example.com")
+	targetHost, targetPort, problem := parseTarget("example.com")
 	if problem != nil {
 		t.Fatalf("problem = %#v", problem)
 	}
-	if host != "example.com" || port != 443 {
-		t.Fatalf("target = %s:%d, want example.com:443", host, port)
+	if targetHost != "example.com" || targetPort != 443 {
+		t.Fatalf("target = %s:%d, want example.com:443", targetHost, targetPort)
 	}
 }
 
 func TestParseTargetCustomPort(t *testing.T) {
-	host, port, problem := parseTarget("example.com:8443")
+	targetHost, targetPort, problem := parseTarget("example.com:8443")
 	if problem != nil {
 		t.Fatalf("problem = %#v", problem)
 	}
-	if host != "example.com" || port != 8443 {
-		t.Fatalf("target = %s:%d, want example.com:8443", host, port)
+	if targetHost != "example.com" || targetPort != 8443 {
+		t.Fatalf("target = %s:%d, want example.com:8443", targetHost, targetPort)
 	}
 }
 
@@ -101,30 +99,30 @@ func TestParseTargetInvalidHost(t *testing.T) {
 }
 
 func TestParseTargetIDN(t *testing.T) {
-	host, port, problem := parseTarget("éxample.test:443")
+	targetHost, targetPort, problem := parseTarget("éxample.test:443")
 	if problem != nil {
 		t.Fatalf("problem = %#v", problem)
 	}
-	if host != "xn--xample-9ua.test" {
-		t.Fatalf("host = %q, want xn--xample-9ua.test", host)
+	if targetHost != "xn--xample-9ua.test" {
+		t.Fatalf("host = %q, want xn--xample-9ua.test", targetHost)
 	}
-	if port != 443 {
-		t.Fatalf("port = %d, want 443", port)
+	if targetPort != 443 {
+		t.Fatalf("port = %d, want 443", targetPort)
 	}
 }
 
 func TestParseTargetExtraColonMatchesRubySplitAssignment(t *testing.T) {
-	host, port, problem := parseTarget("example.com:443:ignored")
+	targetHost, targetPort, problem := parseTarget("example.com:443:ignored")
 	if problem != nil {
 		t.Fatalf("problem = %#v", problem)
 	}
-	if host != "example.com" || port != 443 {
-		t.Fatalf("target = %s:%d, want example.com:443", host, port)
+	if targetHost != "example.com" || targetPort != 443 {
+		t.Fatalf("target = %s:%d, want example.com:443", targetHost, targetPort)
 	}
 }
 
 func TestHandleHTTPSInvalidPort(t *testing.T) {
-	srv := &server{timeout: time.Second, now: time.Now}
+	srv := &server{now: time.Now}
 	req := httptest.NewRequest(http.MethodGet, "/https/example.com:abc.json", nil)
 	res := httptest.NewRecorder()
 
@@ -142,56 +140,96 @@ func TestHandleHTTPSInvalidPort(t *testing.T) {
 	}
 }
 
-func TestAnalyzeHTTPS(t *testing.T) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Skipf("local listener unavailable: %v", err)
+func TestClassifyError(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{&net.DNSError{Err: "no such host", Name: "invalid.test"}, "Socket error"},
+	}
+	for _, tc := range tests {
+		got, _ := classifyError(tc.err)
+		if got != tc.want {
+			t.Fatalf("classify(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestAnalyzeHTTPSDNSFailure(t *testing.T) {
+	analyzer := host.Analyzer{Timeout: time.Second}
+	_, err := analyzer.AnalyzeHTTPS(t.Context(), "nonexistent-domain-xyz12345.invalid", 443)
+	if err == nil {
+		t.Fatal("expected DNS failure")
+	}
+	kind, _ := classifyError(err)
+	if kind != "Socket error" {
+		t.Fatalf("error kind = %q, want Socket error", kind)
+	}
+}
+
+func TestAnalyzeHTTPSIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network integration test in short mode")
 	}
 
-	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	upstream.Listener = listener
-	upstream.StartTLS()
-	defer upstream.Close()
+	srv := &server{
+		analyzer: host.Analyzer{Timeout: 2 * time.Minute},
+		now:      time.Now,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/https/example.com.json", nil)
+	res := httptest.NewRecorder()
 
-	u, err := url.Parse(upstream.URL)
+	srv.routes().ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", res.Code, http.StatusOK, res.Body.String())
+	}
+
+	var payload apiResponse
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Service != "https" {
+		t.Fatalf("service = %q, want https", payload.Service)
+	}
+	if payload.Host != "example.com" {
+		t.Fatalf("host = %q, want example.com", payload.Host)
+	}
+	if payload.Pending {
+		t.Fatal("pending = true, want false")
+	}
+	if payload.Args != 443 {
+		t.Fatalf("args = %d, want 443", payload.Args)
+	}
+	if payload.ID == "" {
+		t.Fatal("id is empty")
+	}
+	if payload.RefreshAt != nil {
+		t.Fatalf("refresh_at = %v, want nil", *payload.RefreshAt)
+	}
+
+	raw, err := json.Marshal(payload.Result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rawPort, ok := strings.Cut(u.Host, ":")
-	if !ok {
-		t.Fatalf("missing port in %q", u.Host)
-	}
-	port, err := strconv.Atoi(rawPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srv := &server{timeout: time.Second, now: time.Now}
-	results, err := srv.analyzeHTTPS(t.Context(), "127.0.0.1", port)
-	if err != nil {
+	var results []map[string]interface{}
+	if err := json.Unmarshal(raw, &results); err != nil {
 		t.Fatal(err)
 	}
 	if len(results) == 0 {
-		t.Fatal("no TLS results")
+		t.Fatal("no results")
 	}
-	if results[0].Handshakes == nil {
-		t.Fatal("handshakes is nil")
-	}
-	if len(results[0].Handshakes.Protocols) == 0 {
-		t.Fatal("protocols is empty")
-	}
-	if len(results[0].Handshakes.Ciphers) == 0 {
-		t.Fatal("ciphers is empty")
-	}
-	if results[0].Handshakes.Ciphers[0].Name == "" || results[0].Handshakes.Ciphers[0].Name == tls.CipherSuiteName(0) {
-		t.Fatalf("cipher suite = %q", results[0].Handshakes.Ciphers[0].Name)
-	}
-	if results[0].States == nil {
-		t.Fatal("states is nil")
-	}
-	if results[0].Grade == "" {
+	if results[0]["grade"] == nil || results[0]["grade"] == "" {
 		t.Fatal("grade is empty")
+	}
+	handshakes, ok := results[0]["handshakes"].(map[string]interface{})
+	if !ok {
+		t.Fatal("handshakes missing")
+	}
+	if handshakes["protocols"] == nil {
+		t.Fatal("protocols missing")
+	}
+	if handshakes["ciphers"] == nil {
+		t.Fatal("ciphers missing")
 	}
 }

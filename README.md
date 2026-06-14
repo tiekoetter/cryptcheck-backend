@@ -1,9 +1,10 @@
 CryptCheck Backend
 ==================
 
-Small Go web service that probes HTTPS endpoints and returns a JSON response
-compatible with the old cryptcheck-backend envelope. It has no Ruby, Bundler, or
-`aeris22/cryptcheck` Docker image dependency.
+Small Go web service that reimplements the [cryptcheck](https://github.com/aeris/cryptcheck)
+HTTPS scanner and returns a JSON response compatible with [cryptcheck.fr](https://cryptcheck.fr).
+The TLS engine, grading, and state analysis are implemented in pure Go with no Ruby or
+external `cryptcheck` binary dependency.
 
 API
 ---
@@ -17,6 +18,7 @@ Successful responses use this shape:
 
 ```json
 {
+  "id": "cc54669a-a8d1-4739-b329-635b6e0e63b4",
   "service": "https",
   "host": "example.com",
   "pending": false,
@@ -25,23 +27,25 @@ Successful responses use this shape:
       "hostname": "example.com",
       "ip": "93.184.216.34",
       "port": 443,
+      "grade": "F",
+      "states": {"critical": {}, "error": {}, "warning": {}, "good": {}, "great": {}, "best": {}},
       "handshakes": {
         "certs": [],
         "dh": [],
-        "protocols": [{"protocol": "TLSv1_3", "states": {}}],
-        "ciphers": [{"protocol": "TLSv1_3", "name": "TLS_AES_128_GCM_SHA256", "states": {}}],
-        "ciphers_preference": [{"protocol": "TLSv1_3", "na": true}],
+        "hsts": null,
+        "protocols": [{"protocol": "TLSv1_2", "states": {}}],
+        "ciphers": [{"protocol": "TLSv1_2", "name": "ECDHE-ECDSA-AES128-GCM-SHA256", "states": {}}],
+        "ciphers_preference": [{"protocol": "TLSv1_2", "cipher_suite": []}],
         "curves": [],
-        "curves_preference": null,
+        "curves_preference": [],
         "fallback_scsv": false
-      },
-      "states": {},
-      "grade": "A"
+      }
     }
   ],
   "created_at": "2026-06-14T12:00:00.000Z",
   "updated_at": "2026-06-14T12:00:00.000Z",
-  "args": 443
+  "args": 443,
+  "refresh_at": null
 }
 ```
 
@@ -90,5 +94,5 @@ Flags:
 Environment:
 
 ```text
-TCP_TIMEOUT  TLS dial timeout in seconds, default 10
+TCP_TIMEOUT  per-connection timeout in seconds, default 10
 ```

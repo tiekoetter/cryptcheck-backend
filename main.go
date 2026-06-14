@@ -1,13 +1,7 @@
 package main
 
 import (
-	"context"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dalf/cryptcheck-backend/internal/host"
 	"golang.org/x/net/idna"
 )
 
@@ -30,11 +25,12 @@ const (
 )
 
 type server struct {
-	timeout time.Duration
-	now     func() time.Time
+	analyzer host.Analyzer
+	now      func() time.Time
 }
 
 type apiResponse struct {
+	ID        string      `json:"id"`
 	Service   string      `json:"service"`
 	Host      string      `json:"host"`
 	Pending   bool        `json:"pending"`
@@ -42,66 +38,20 @@ type apiResponse struct {
 	CreatedAt string      `json:"created_at"`
 	UpdatedAt string      `json:"updated_at"`
 	Args      int         `json:"args"`
-}
-
-type tlsResult struct {
-	Hostname   string                 `json:"hostname"`
-	IP         string                 `json:"ip"`
-	Port       int                    `json:"port"`
-	Handshakes *handshakeInfo         `json:"handshakes,omitempty"`
-	States     map[string]interface{} `json:"states,omitempty"`
-	Grade      string                 `json:"grade,omitempty"`
-	Error      string                 `json:"error,omitempty"`
-}
-
-type certificateInfo struct {
-	Subject     string                 `json:"subject"`
-	Serial      string                 `json:"serial"`
-	Issuer      string                 `json:"issuer"`
-	Lifetime    map[string]string      `json:"lifetime"`
-	Fingerprint string                 `json:"fingerprint"`
-	Chain       []certificateInfo      `json:"chain,omitempty"`
-	Key         map[string]interface{} `json:"key"`
-	States      map[string]interface{} `json:"states"`
-}
-
-type handshakeInfo struct {
-	Certs             []certificateInfo        `json:"certs"`
-	DH                []interface{}            `json:"dh"`
-	Protocols         []protocolInfo           `json:"protocols"`
-	Ciphers           []cipherInfo             `json:"ciphers"`
-	CiphersPreference []map[string]interface{} `json:"ciphers_preference"`
-	Curves            []interface{}            `json:"curves"`
-	CurvesPreference  interface{}              `json:"curves_preference"`
-	FallbackSCSV      bool                     `json:"fallback_scsv"`
-}
-
-type protocolInfo struct {
-	Protocol string                 `json:"protocol"`
-	States   map[string]interface{} `json:"states"`
-}
-
-type cipherInfo struct {
-	Protocol       string                 `json:"protocol"`
-	Name           string                 `json:"name"`
-	KeyExchange    string                 `json:"key_exchange,omitempty"`
-	Authentication string                 `json:"authentication,omitempty"`
-	Encryption     []interface{}          `json:"encryption,omitempty"`
-	HMAC           map[string]interface{} `json:"hmac,omitempty"`
-	States         map[string]interface{} `json:"states"`
+	RefreshAt *string     `json:"refresh_at"`
 }
 
 func main() {
-	host := flag.String("o", defaultHost, "address to bind")
-	port := flag.Int("p", defaultPort, "port to listen on")
+	bindHost := flag.String("o", defaultHost, "address to bind")
+	bindPort := flag.Int("p", defaultPort, "port to listen on")
 	flag.Parse()
 
 	srv := &server{
-		timeout: envDuration("TCP_TIMEOUT", 10*time.Second),
-		now:     time.Now,
+		analyzer: host.Analyzer{Timeout: envDuration("TCP_TIMEOUT", 10*time.Second)},
+		now:      time.Now,
 	}
 
-	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
+	addr := net.JoinHostPort(*bindHost, strconv.Itoa(*bindPort))
 	log.Printf("listening on %s", addr)
 	if err := http.ListenAndServe(addr, srv.routes()); err != nil {
 		log.Fatal(err)
@@ -144,38 +94,41 @@ func (s *server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host, port, problem := parseTarget(id)
+	targetHost, targetPort, problem := parseTarget(id)
 	if problem != nil {
 		writeJSON(w, http.StatusBadRequest, problem)
 		return
 	}
 
-	results, err := s.analyzeHTTPS(r.Context(), host, port)
+	results, err := s.analyzer.AnalyzeHTTPS(r.Context(), targetHost, targetPort)
 	if err != nil {
+		kind, message := classifyError(err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"status":        http.StatusServiceUnavailable,
-			"error":         classifyError(err),
-			"error_message": err.Error(),
+			"error":         kind,
+			"error_message": message,
 		})
 		return
 	}
 
 	timestamp := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
 	writeJSON(w, http.StatusOK, apiResponse{
+		ID:        newUUID(),
 		Service:   "https",
-		Host:      host,
+		Host:      targetHost,
 		Pending:   false,
 		Result:    results,
 		CreatedAt: timestamp,
 		UpdatedAt: timestamp,
-		Args:      port,
+		Args:      targetPort,
+		RefreshAt: nil,
 	})
 }
 
 func parseTarget(id string) (string, int, map[string]interface{}) {
 	parts := strings.Split(id, ":")
-	host := parts[0]
-	port := 443
+	targetHost := parts[0]
+	targetPort := 443
 	if len(parts) > 1 {
 		rawPort := parts[1]
 		if containsNonDigit(rawPort) {
@@ -193,170 +146,47 @@ func parseTarget(id string) (string, int, map[string]interface{}) {
 				"error_message": value,
 			}
 		}
-		port = value
+		targetPort = value
 	}
 
-	lowerHost := strings.ToLower(host)
+	lowerHost := strings.ToLower(targetHost)
 	asciiHost, err := idna.ToASCII(lowerHost)
 	if err == nil {
-		host = asciiHost
+		targetHost = asciiHost
 	} else {
-		host = lowerHost
+		targetHost = lowerHost
 	}
-	if err != nil || !validHost(host) {
+	if err != nil || !validHost(targetHost) {
 		return "", 0, map[string]interface{}{
 			"status":  http.StatusBadRequest,
 			"error":   "Invalid host",
-			"message": host,
+			"message": targetHost,
 		}
 	}
 
-	return host, port, nil
+	return targetHost, targetPort, nil
 }
 
-func (s *server) analyzeHTTPS(ctx context.Context, host string, port int) ([]tlsResult, error) {
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-	if err != nil {
-		return nil, err
+func classifyError(err error) (string, string) {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "Socket error", dnsErr.Error()
 	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("no addresses found for %s", host)
-	}
-
-	results := make([]tlsResult, 0, len(ips))
-	for _, ip := range ips {
-		results = append(results, probeTLS(ctx, host, ip, port, s.timeout))
-	}
-	return results, nil
-}
-
-func probeTLS(ctx context.Context, host string, ip net.IP, port int, timeout time.Duration) tlsResult {
-	result := tlsResult{
-		Hostname: host,
-		IP:       ip.String(),
-		Port:     port,
-	}
-
-	dialer := &net.Dialer{Timeout: timeout}
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-		NextProtos:         []string{"h2", "http/1.1"},
-	}
-	if net.ParseIP(host) == nil {
-		tlsConfig.ServerName = host
-	}
-
-	address := net.JoinHostPort(ip.String(), strconv.Itoa(port))
-	rawConn, err := dialer.DialContext(ctx, "tcp", address)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	conn := tls.Client(rawConn, tlsConfig)
-	defer conn.Close()
-	if err := conn.HandshakeContext(ctx); err != nil {
-		result.Error = err.Error()
-		return result
-	}
-
-	state := conn.ConnectionState()
-	protocol := cryptcheckTLSVersionName(state.Version)
-	cipher := tls.CipherSuiteName(state.CipherSuite)
-	valid, certError := verifyCertificates(host, state.PeerCertificates)
-	result.Handshakes = &handshakeInfo{
-		Certs: certificateChain(state.PeerCertificates),
-		DH:    []interface{}{},
-		Protocols: []protocolInfo{{
-			Protocol: protocol,
-			States:   emptyStates(),
-		}},
-		Ciphers: []cipherInfo{{
-			Protocol:       protocol,
-			Name:           cipher,
-			KeyExchange:    cipherKeyExchange(cipher, state.Version),
-			Authentication: certAuthentication(state.PeerCertificates),
-			Encryption:     cipherEncryption(cipher),
-			HMAC:           cipherHMAC(cipher),
-			States:         emptyStates(),
-		}},
-		CiphersPreference: []map[string]interface{}{{
-			"protocol": protocol,
-			"na":       true,
-		}},
-		Curves:           []interface{}{},
-		CurvesPreference: nil,
-		FallbackSCSV:     false,
-	}
-	result.States = emptyStates()
-	result.Grade = compatibilityGrade(valid, certError)
-	return result
-}
-
-func verifyCertificates(host string, certs []*x509.Certificate) (bool, string) {
-	if len(certs) == 0 {
-		return false, "server did not provide a certificate"
-	}
-
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		return false, err.Error()
-	}
-
-	intermediates := x509.NewCertPool()
-	for _, cert := range certs[1:] {
-		intermediates.AddCert(cert)
-	}
-
-	_, err = certs[0].Verify(x509.VerifyOptions{
-		DNSName:       host,
-		Roots:         roots,
-		Intermediates: intermediates,
-		CurrentTime:   time.Now(),
-	})
-	if err != nil {
-		return false, err.Error()
-	}
-	return true, ""
-}
-
-func certificateChain(certs []*x509.Certificate) []certificateInfo {
-	if len(certs) == 0 {
-		return []certificateInfo{}
-	}
-	leaf := certificateInfoFromX509(certs[0])
-	leaf.Chain = make([]certificateInfo, 0, len(certs))
-	for _, cert := range certs {
-		leaf.Chain = append(leaf.Chain, certificateInfoFromX509(cert))
-	}
-	return []certificateInfo{leaf}
-}
-
-func certificateInfoFromX509(cert *x509.Certificate) certificateInfo {
-	fingerprint := sha256.Sum256(cert.Raw)
-	return certificateInfo{
-		Subject:     cert.Subject.String(),
-		Serial:      cert.SerialNumber.String(),
-		Issuer:      cert.Issuer.String(),
-		Fingerprint: fmt.Sprintf("%X", fingerprint[:]),
-		Lifetime: map[string]string{
-			"not_before": cert.NotBefore.UTC().Format(time.RFC3339),
-			"not_after":  cert.NotAfter.UTC().Format(time.RFC3339),
-		},
-		Key:    publicKeyInfo(cert.PublicKey),
-		States: emptyStates(),
-	}
-}
-
-func publicKeyInfo(key interface{}) map[string]interface{} {
-	switch k := key.(type) {
-	case *rsa.PublicKey:
-		return map[string]interface{}{"type": "rsa", "size": k.N.BitLen()}
-	case *ecdsa.PublicKey:
-		return map[string]interface{}{"type": "ecc", "size": k.Curve.Params().BitSize}
-	case ed25519.PublicKey:
-		return map[string]interface{}{"type": "ed25519", "size": len(k) * 8}
+	message := err.Error()
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "getaddrinfo"), strings.Contains(lower, "no such host"), strings.Contains(lower, "name or service not known"):
+		return "Socket error", message
+	case strings.Contains(lower, "network unreachable"):
+		return "Address not available", message
+	case strings.Contains(lower, "connection refused"):
+		return "Connection refused", message
+	case strings.Contains(lower, "no route to host"):
+		return "No route to host", message
+	case strings.Contains(lower, "timeout"):
+		return "CryptCheck timeout", message
 	default:
-		return map[string]interface{}{"type": "unknown"}
+		return "CryptCheck error", message
 	}
 }
 
@@ -402,111 +232,15 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func classifyError(err error) string {
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return "Socket error"
+func newUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
-	return "CryptCheck error"
-}
-
-func cryptcheckTLSVersionName(version uint16) string {
-	switch version {
-	case tls.VersionTLS10:
-		return "TLSv1"
-	case tls.VersionTLS11:
-		return "TLSv1_1"
-	case tls.VersionTLS12:
-		return "TLSv1_2"
-	case tls.VersionTLS13:
-		return "TLSv1_3"
-	default:
-		return fmt.Sprintf("0x%04x", version)
-	}
-}
-
-func compatibilityGrade(valid bool, certError string) string {
-	if !valid {
-		if strings.Contains(strings.ToLower(certError), "not") && strings.Contains(strings.ToLower(certError), "valid for") {
-			return "V"
-		}
-		return "T"
-	}
-	return "A"
-}
-
-func emptyStates() map[string]interface{} {
-	return map[string]interface{}{
-		"critical": map[string]interface{}{},
-		"error":    map[string]interface{}{},
-		"warning":  map[string]interface{}{},
-		"good":     map[string]interface{}{},
-		"great":    map[string]interface{}{},
-		"best":     map[string]interface{}{},
-	}
-}
-
-func cipherKeyExchange(name string, version uint16) string {
-	if version == tls.VersionTLS13 || strings.Contains(name, "ECDHE") {
-		return "ecdh"
-	}
-	if strings.Contains(name, "DHE") {
-		return "dh"
-	}
-	return "rsa"
-}
-
-func certAuthentication(certs []*x509.Certificate) string {
-	if len(certs) == 0 {
-		return ""
-	}
-	switch certs[0].PublicKeyAlgorithm {
-	case x509.ECDSA, x509.Ed25519:
-		return "ecdsa"
-	case x509.RSA:
-		return "rsa"
-	case x509.DSA:
-		return "dss"
-	default:
-		return ""
-	}
-}
-
-func cipherEncryption(name string) []interface{} {
-	switch {
-	case strings.Contains(name, "CHACHA20"):
-		return []interface{}{"chacha20", 256, "stream", "aead"}
-	case strings.Contains(name, "AES_256"):
-		return []interface{}{"aes", 256, 128, cipherMode(name)}
-	case strings.Contains(name, "AES_128"):
-		return []interface{}{"aes", 128, 128, cipherMode(name)}
-	default:
-		return nil
-	}
-}
-
-func cipherMode(name string) string {
-	switch {
-	case strings.Contains(name, "GCM"):
-		return "gcm"
-	case strings.Contains(name, "CCM"):
-		return "ccm"
-	default:
-		return "cbc"
-	}
-}
-
-func cipherHMAC(name string) map[string]interface{} {
-	switch {
-	case strings.Contains(name, "SHA384"):
-		return map[string]interface{}{"name": "sha384", "size": 384}
-	case strings.Contains(name, "SHA256"):
-		return map[string]interface{}{"name": "sha256", "size": 256}
-	case strings.Contains(name, "CHACHA20"):
-		return map[string]interface{}{"name": "poly1305", "size": 128}
-	default:
-		return nil
-	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
