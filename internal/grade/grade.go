@@ -1,6 +1,6 @@
 package grade
 
-import "github.com/dalf/cryptcheck-backend/internal/state"
+import "github.com/tiekoetter/cryptcheck-backend/internal/state"
 
 var statusGrades = map[state.Level]string{
 	state.Critical: "G",

@@ -1,6 +1,6 @@
 package method
 
-import "github.com/dalf/cryptcheck-backend/internal/state"
+import "github.com/tiekoetter/cryptcheck-backend/internal/state"
 
 type Info struct {
 	Protocol string

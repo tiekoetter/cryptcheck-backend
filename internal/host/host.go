@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/dalf/cryptcheck-backend/internal/engine"
-	"github.com/dalf/cryptcheck-backend/internal/state"
+	"github.com/tiekoetter/cryptcheck-backend/internal/engine"
+	"github.com/tiekoetter/cryptcheck-backend/internal/state"
 )
 
 type Result struct {

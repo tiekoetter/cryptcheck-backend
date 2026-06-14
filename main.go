@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dalf/cryptcheck-backend/internal/host"
+	"github.com/tiekoetter/cryptcheck-backend/internal/host"
 	"golang.org/x/net/idna"
 )
 

@@ -1,5 +1,5 @@
 GO ?= go
-IMAGE ?= dalf/cryptcheck-backend:latest
+IMAGE ?= tiekoetter/cryptcheck-backend:latest
 
 .PHONY: build test run docker-build docker-run docker-daemon
 

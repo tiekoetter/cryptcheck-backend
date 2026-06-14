@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dalf/cryptcheck-backend/internal/cert"
-	"github.com/dalf/cryptcheck-backend/internal/cipher"
-	"github.com/dalf/cryptcheck-backend/internal/grade"
-	"github.com/dalf/cryptcheck-backend/internal/method"
-	"github.com/dalf/cryptcheck-backend/internal/state"
+	"github.com/tiekoetter/cryptcheck-backend/internal/cert"
+	"github.com/tiekoetter/cryptcheck-backend/internal/cipher"
+	"github.com/tiekoetter/cryptcheck-backend/internal/grade"
+	"github.com/tiekoetter/cryptcheck-backend/internal/method"
+	"github.com/tiekoetter/cryptcheck-backend/internal/state"
 )
 
 const (

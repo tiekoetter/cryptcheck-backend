@@ -1,4 +1,4 @@
-module github.com/dalf/cryptcheck-backend
+module github.com/tiekoetter/cryptcheck-backend
 
 go 1.26
 

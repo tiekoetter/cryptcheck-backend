@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dalf/cryptcheck-backend/internal/state"
+	"github.com/tiekoetter/cryptcheck-backend/internal/state"
 )
 
 type Info struct {

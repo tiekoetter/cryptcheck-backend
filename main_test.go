@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dalf/cryptcheck-backend/internal/host"
+	"github.com/tiekoetter/cryptcheck-backend/internal/host"
 )
 
 func TestRoot(t *testing.T) {

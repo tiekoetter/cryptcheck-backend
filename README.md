@@ -78,7 +78,7 @@ make docker-run
 Or directly:
 
 ```sh
-docker run --rm -p 7000:7000 dalf/cryptcheck-backend:latest -o 0.0.0.0
+docker run --rm -p 7000:7000 tiekoetter/cryptcheck-backend:latest -o 0.0.0.0
 ```
 
 Configuration

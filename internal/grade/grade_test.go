@@ -3,7 +3,7 @@ package grade
 import (
 	"testing"
 
-	"github.com/dalf/cryptcheck-backend/internal/state"
+	"github.com/tiekoetter/cryptcheck-backend/internal/state"
 )
 
 func TestCalculateInvalidIdentity(t *testing.T) {
